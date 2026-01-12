@@ -1,18 +1,20 @@
 import streamlit as st
 import pandas as pd
+import altair as alt  # Biblioteka do wykresów
 
 # --- KONFIGURACJA WIZUALNA ---
 st.set_page_config(page_title="Panel Magazyniera v2", page_icon="📦")
 
-# --- BAZA DANYCH (Zasoby początkowe) ---
-# Zmieniona struktura na listę słowników - wygląda inaczej w kodzie
-magazyn_produkty = [
-    {"nazwa": "Laptop Dell", "sztuk": 5},
-    {"nazwa": "Monitor LG", "sztuk": 12},
-    {"nazwa": "Klawiatura Mechaniczna", "sztuk": 8}
-]
+# --- TRWAŁOŚĆ DANYCH (st.session_state) ---
+# Inicjalizacja bazy w pamięci sesji, aby dane nie znikały
+if 'magazyn' not in st.session_state:
+    st.session_state.magazyn = [
+        {"nazwa": "Laptop Dell", "sztuk": 5},
+        {"nazwa": "Monitor LG", "sztuk": 12},
+        {"nazwa": "Klawiatura Mechaniczna", "sztuk": 8}
+    ]
 
-# Cele do osiągnięcia
+# Cele (stałe)
 wymagany_stan = {
     "Laptop Dell": 10,
     "Monitor LG": 12,
@@ -24,100 +26,104 @@ wymagany_stan = {
 # --- LOGIKA APLIKACJI ---
 
 def operacja_przyjecia(produkt_nazwa, ile):
-    """Zajmuje się dopisaniem towaru do bazy"""
     if produkt_nazwa == "":
         return False, "Błąd: Nazwa nie może być pusta!"
     
     znaleziono = False
-    for p in magazyn_produkty:
+    for p in st.session_state.magazyn:
         if p["nazwa"].lower() == produkt_nazwa.lower():
             p["sztuk"] += ile
             znaleziono = True
             break
             
     if not znaleziono:
-        magazyn_produkty.append({"nazwa": produkt_nazwa, "sztuk": ile})
-    
+        st.session_state.magazyn.append({"nazwa": produkt_nazwa, "sztuk": ile})
     return True, f"Pomyślnie przyjęto: {produkt_nazwa}"
 
 def operacja_wydania(nazwa_z_listy, ile_wyjac):
-    """Zajmuje się odejmowaniem towaru"""
-    for p in magazyn_produkty:
+    for p in st.session_state.magazyn:
         if p["nazwa"] == nazwa_z_listy:
             if p["sztuk"] < ile_wyjac:
                 return False, "Błąd: Niewystarczająca ilość na stanie!"
             p["sztuk"] -= ile_wyjac
             if p["sztuk"] == 0:
-                magazyn_produkty.remove(p)
+                st.session_state.magazyn.remove(p)
             return True, "Towar wydany z magazynu."
     return False, "Nie znaleziono produktu."
 
 # --- INTERFEJS UŻYTKOWNIKA ---
 
 st.title("📦 System Zarządzania Zapasami")
-st.info("Tryb demonstracyjny: Dane resetują się po każdym odświeżeniu strony.")
 
-# Zakładki zamiast sekcji jedna pod drugą - wygląda nowocześniej
-tab1, tab2, tab3 = st.tabs(["📊 Przegląd i Braki", "📥 Przyjęcie Towaru", "📤 Wydanie Towaru"])
+# --- SEKCJA WYKRESU (Nowość) ---
+st.subheader("📊 Wizualizacja Stanów")
+df_plot = pd.DataFrame(st.session_state.magazyn)
+
+if not df_plot.empty:
+    # Definiujemy kolor: czerwony jeśli < 5 sztuk, niebieski dla reszty
+    df_plot['Kolor'] = df_plot['sztuk'].apply(lambda x: 'Braki' if x < 5 else 'OK')
+    
+    chart = alt.Chart(df_plot).mark_bar().encode(
+        x=alt.X('nazwa:N', title='Produkt', sort='-y'),
+        y=alt.Y('sztuk:Q', title='Ilość'),
+        color=alt.Color('Kolor:N', scale=alt.Scale(domain=['Braki', 'OK'], range=['#FF4B4B', '#1F77B4']), legend=None),
+        tooltip=['nazwa', 'sztuk']
+    ).properties(height=300)
+    
+    st.altair_chart(chart, use_container_width=True)
+
+# --- ZAKŁADKI ---
+tab1, tab2, tab3 = st.tabs(["📋 Lista i Braki", "📥 Przyjęcie", "📤 Wydanie"])
 
 with tab1:
-    st.subheader("Aktualne braki (do zamówienia)")
+    col1, col2 = st.columns(2)
     
+    aktualny_dict = {item["nazwa"]: item["sztuk"] for item in st.session_state.magazyn}
     lista_brakow = []
-    # Tworzymy słownik pomocniczy dla łatwiejszego porównania
-    aktualny_dict = {item["nazwa"]: item["sztuk"] for item in magazyn_produkty}
-    
     for produkt, cel in wymagany_stan.items():
         obecnie = aktualny_dict.get(produkt, 0)
         if obecnie < cel:
-            lista_brakow.append({
-                "Produkt": produkt,
-                "Brakuje [szt]": cel - obecnie,
-                "Status": f"{obecnie} / {cel}"
-            })
-            
-    if lista_brakow:
-        st.table(pd.DataFrame(lista_brakow))
-    else:
-        st.success("Wszystkie stany magazynowe są zgodne z planem!")
+            lista_brakow.append({"Produkt": produkt, "Do zamówienia": cel - obecnie, "Stan": f"{obecnie}/{cel}"})
 
-    st.divider()
-    st.subheader("Pełna lista magazynowa")
-    st.dataframe(pd.DataFrame(magazyn_produkty), use_container_width=True, hide_index=True)
+    with col1:
+        st.write("**⚠️ Wykryte braki:**")
+        if lista_brakow:
+            st.dataframe(pd.DataFrame(lista_brakow), hide_index=True)
+        else:
+            st.success("Stany pełne!")
+
+    with col2:
+        st.write("**📦 Pełny stan:**")
+        st.dataframe(df_plot[['nazwa', 'sztuk']], hide_index=True)
 
 with tab2:
-    st.subheader("Dodaj nowy ładunek")
-    with st.container(border=True):
-        input_nazwa = st.text_input("Wpisz nazwę produktu")
-        input_ile = st.number_input("Ilość do dodania", min_value=1, step=1)
-        
-        if st.button("Potwierdź przychód", type="primary"):
+    with st.form("form_przyjecie"):
+        input_nazwa = st.text_input("Nazwa produktu")
+        input_ile = st.number_input("Ilość", min_value=1, step=1)
+        if st.form_submit_button("Dodaj do magazynu"):
             sukces, info = operacja_przyjecia(input_nazwa.strip(), input_ile)
-            if sukces:
-                st.toast(info) # Małe powiadomienie w rogu
+            if sukces: 
                 st.success(info)
-            else:
-                st.error(info)
+                st.rerun() # Odśwież, by zaktualizować wykres
+            else: st.error(info)
 
 with tab3:
-    st.subheader("Wydaj towar z magazynu")
-    if magazyn_produkty:
-        lista_nazw = [p["nazwa"] for p in magazyn_produkty]
-        wybrany = st.selectbox("Wybierz produkt z półki", lista_nazw)
-        
-        # Pobieramy max dostępną ilość dla wybranego produktu
-        max_dostepne = next(p["sztuk"] for p in magazyn_produkty if p["nazwa"] == wybrany)
-        
-        ile_wydac = st.number_input("Ile sztuk wydać?", min_value=1, max_value=max_dostepne, value=1)
-        
-        if st.button("Zatwierdź wydanie"):
-            sukces, info = operacja_wydania(wybrany, ile_wydac)
-            if sukces:
-                st.success(info)
-            else:
-                st.error(info)
+    if st.session_state.magazyn:
+        with st.form("form_wydanie"):
+            lista_nazw = [p["nazwa"] for p in st.session_state.magazyn]
+            wybrany = st.selectbox("Produkt", lista_nazw)
+            ile_wydac = st.number_input("Ilość do wydania", min_value=1)
+            if st.form_submit_button("Wydaj towar"):
+                sukces, info = operacja_wydania(wybrany, ile_wydac)
+                if sukces: 
+                    st.success(info)
+                    st.rerun()
+                else: st.error(info)
     else:
-        st.warning("Magazyn świeci pustkami. Brak produktów do wydania.")
+        st.warning("Brak towaru.")
 
-st.sidebar.markdown("---")
-st.sidebar.write(f"Suma pozycji w bazie: {len(magazyn_produkty)}")
+# --- BOCZNY PANEL: MOTYW ---
+st.sidebar.title("Ustawienia")
+st.sidebar.info("💡 **Motyw:** Streamlit automatycznie dopasowuje motyw do systemu operacyjnego Twojego komputera.")
+
+# Instrukcja wymuszenia trybu ciemnego w kodzie (poniżej wyjaśnienie)
