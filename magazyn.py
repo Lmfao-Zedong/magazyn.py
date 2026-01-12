@@ -1,143 +1,101 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+from supabase import create_client
 
-# --- KONFIGURACJA WIZUALNA ---
-st.set_page_config(page_title="Panel Magazyniera PRO", page_icon="📦", layout="wide")
+# --- KONFIGURACJA ---
+st.set_page_config(page_title="Magazyn Chmurowy v3", page_icon="☁️", layout="wide")
 
-# --- TRWAŁOŚĆ DANYCH ---
-if 'magazyn' not in st.session_state:
-    st.session_state.magazyn = [
-        {"nazwa": "Laptop Dell", "sztuk": 5, "cena": 3500.0},
-        {"nazwa": "Monitor LG", "sztuk": 12, "cena": 800.0},
-        {"nazwa": "Klawiatura Mechaniczna", "sztuk": 8, "cena": 250.0}
-    ]
+# Podłączanie do bazy (Zalecane użycie st.secrets na GitHubie)
+# Jeśli testujesz lokalnie, możesz wpisać dane w cudzysłów
+URL = st.secrets.get("SUPABASE_URL", "TWÓJ_URL_TUTAJ")
+KEY = st.secrets.get("SUPABASE_KEY", "TWÓJ_KLUCZ_TUTAJ")
 
-# Cele (stałe)
-wymagany_stan = {
-    "Laptop Dell": 10,
-    "Monitor LG": 12,
-    "Myszka Logitech": 15,
-    "Klawiatura Mechaniczna": 5,
-    "Podkładka Gamingowa": 20
-}
+@st.cache_resource
+def init_connection():
+    return create_client(URL, KEY)
 
-# --- LOGIKA APLIKACJI ---
+supabase = init_connection()
 
-def operacja_przyjecia(produkt_nazwa, ile, cena):
-    if produkt_nazwa == "":
-        return False, "Błąd: Nazwa nie może być pusta!"
+# --- FUNKCJE BAZY DANYCH ---
+
+def pobierz_dane():
+    # Pobiera wszystkie wiersze z tabeli 'magazyn'
+    res = supabase.table("magazyn").select("*").execute()
+    return res.data
+
+def zapisz_towar(nazwa, ile, cena):
+    # Sprawdza czy produkt istnieje (case-insensitive)
+    istnieje = supabase.table("magazyn").select("*").eq("nazwa", nazwa).execute()
     
-    znaleziono = False
-    for p in st.session_state.magazyn:
-        if p["nazwa"].lower() == produkt_nazwa.lower():
-            p["sztuk"] += ile
-            p["cena"] = cena # Aktualizacja ceny przy dostawie
-            znaleziono = True
-            break
-            
-    if not znaleziono:
-        st.session_state.magazyn.append({"nazwa": produkt_nazwa, "sztuk": ile, "cena": cena})
-    return True, f"Pomyślnie przyjęto: {produkt_nazwa}"
+    if istnieje.data:
+        nowa_ilosc = istnieje.data[0]['sztuk'] + ile
+        supabase.table("magazyn").update({"sztuk": nowa_ilosc, "cena": cena}).eq("nazwa", nazwa).execute()
+    else:
+        supabase.table("magazyn").insert({"nazwa": nazwa, "sztuk": ile, "cena": cena}).execute()
 
-def zmien_cene(nazwa_produktu, nowa_cena):
-    for p in st.session_state.magazyn:
-        if p["nazwa"] == nazwa_produktu:
-            p["cena"] = nowa_cena
-            return True
+def wydaj_towar(nazwa, ile):
+    res = supabase.table("magazyn").select("sztuk").eq("nazwa", nazwa).single().execute()
+    obecnie = res.data['sztuk']
+    if obecnie >= ile:
+        nowy = obecnie - ile
+        if nowy == 0:
+            supabase.table("magazyn").delete().eq("nazwa", nazwa).execute()
+        else:
+            supabase.table("magazyn").update({"sztuk": nowy}).eq("nazwa", nazwa).execute()
+        return True
     return False
 
-# --- INTERFEJS UŻYTKOWNIKA ---
+# --- UI APLIKACJI ---
 
-st.title("📦 System Magazynowy z Finansami")
+st.title("📦 System Magazynowy PRO (Chmura)")
 
-# Wykres na górze
-df_magazyn = pd.DataFrame(st.session_state.magazyn)
-if not df_magazyn.empty:
-    df_magazyn['Kolor'] = df_magazyn['sztuk'].apply(lambda x: 'Braki' if x < 5 else 'OK')
-    chart = alt.Chart(df_magazyn).mark_bar().encode(
-        x=alt.X('nazwa:N', title='Produkt', sort='-y'),
-        y=alt.Y('sztuk:Q', title='Ilość sztuk'),
+# Pobieranie danych do DF
+dane = pobierz_dane()
+df = pd.DataFrame(dane)
+
+if not df.empty:
+    # Wykres Kolorowy
+    df['Kolor'] = df['sztuk'].apply(lambda x: 'Braki' if x < 5 else 'OK')
+    chart = alt.Chart(df).mark_bar().encode(
+        x=alt.X('nazwa:N', sort='-y'),
+        y='sztuk:Q',
         color=alt.Color('Kolor:N', scale=alt.Scale(domain=['Braki', 'OK'], range=['#FF4B4B', '#1F77B4']), legend=None),
         tooltip=['nazwa', 'sztuk', 'cena']
     ).properties(height=300)
     st.altair_chart(chart, use_container_width=True)
 
 # Zakładki
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Przegląd", "📥 Przyjęcie i Ceny", "📤 Wydanie", "💰 Finanse"])
+t1, t2, t3, t4 = st.tabs(["📊 Stan", "📥 Przyjęcie/Cena", "📤 Wydanie", "💰 Finanse"])
 
-with tab1:
-    st.subheader("Aktualny stan i braki")
-    aktualny_dict = {item["nazwa"]: item["sztuk"] for item in st.session_state.magazyn}
-    
-    lista_brakow = []
-    for produkt, cel in wymagany_stan.items():
-        obecnie = aktualny_dict.get(produkt, 0)
-        if obecnie < cel:
-            lista_brakow.append({"Produkt": produkt, "Brakuje": cel - obecnie, "Stan": f"{obecnie}/{cel}"})
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**⚠️ Do zamówienia:**")
-        st.table(pd.DataFrame(lista_brakow)) if lista_brakow else st.success("Brak braków!")
-    with col2:
-        st.write("**📦 Lista produktów:**")
-        st.dataframe(df_magazyn[['nazwa', 'sztuk', 'cena']], hide_index=True, use_container_width=True)
+with t1:
+    st.subheader("Aktualne zapasy")
+    st.dataframe(df, hide_index=True, use_container_width=True)
 
-with tab2:
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader("Dodaj / Przyjmij towar")
-        with st.form("form_dodaj"):
-            n_nazwa = st.text_input("Nazwa produktu")
-            n_ile = st.number_input("Ilość", min_value=1)
-            n_cena = st.number_input("Cena jednostkowa (PLN)", min_value=0.01, format="%.2f")
-            if st.form_submit_button("Zatwierdź przychód"):
-                sukces, msg = operacja_przyjecia(n_nazwa.strip(), n_ile, n_cena)
-                if sukces: st.rerun()
-    
-    with col_b:
-        st.subheader("Aktualizuj tylko cenę")
-        if not df_magazyn.empty:
-            with st.form("form_cena"):
-                wybierz_p = st.selectbox("Wybierz produkt", df_magazyn['nazwa'])
-                nowa_c = st.number_input("Nowa cena", min_value=0.01, format="%.2f")
-                if st.form_submit_button("Zmień cenę"):
-                    if zmien_cene(wybierz_p, nowa_c): st.rerun()
+with t2:
+    with st.form("form_add"):
+        c1, c2, c3 = st.columns(3)
+        n = c1.text_input("Nazwa produktu")
+        i = c2.number_input("Ilość", min_value=1)
+        c = c3.number_input("Cena (PLN)", min_value=0.0)
+        if st.form_submit_button("Zatwierdź do bazy"):
+            zapisz_towar(n.strip(), i, c)
+            st.rerun()
 
-with tab3:
-    st.subheader("Wydanie towaru")
-    if not df_magazyn.empty:
-        with st.form("form_wydanie"):
-            w_wybor = st.selectbox("Produkt", df_magazyn['nazwa'])
-            max_w = int(df_magazyn[df_magazyn['nazwa'] == w_wybor]['sztuk'].iloc[0])
-            w_ile = st.number_input("Ilość", min_value=1, max_value=max_w)
-            if st.form_submit_button("Wydaj z magazynu"):
-                for p in st.session_state.magazyn:
-                    if p["nazwa"] == w_wybor:
-                        p["sztuk"] -= w_ile
-                        if p["sztuk"] <= 0: st.session_state.magazyn.remove(p)
-                        st.rerun()
+with t3:
+    if not df.empty:
+        with st.form("form_out"):
+            wybor = st.selectbox("Wybierz do wydania", df['nazwa'])
+            ile_w = st.number_input("Ile sztuk", min_value=1)
+            if st.form_submit_button("Wydaj"):
+                if wydaj_towar(wybor, ile_w):
+                    st.rerun()
+                else:
+                    st.error("Błąd ilości!")
 
-with tab4:
-    st.subheader("Analiza finansowa")
-    if not df_magazyn.empty:
-        # Obliczenia
-        df_fin = df_magazyn.copy()
-        df_fin['Wartość łączna'] = df_fin['sztuk'] * df_fin['cena']
-        suma_total = df_fin['Wartość łączna'].sum()
-        
-        # Wyświetlanie sumy
-        st.metric("Całkowita wartość magazynu", f"{suma_total:,.2f} PLN")
-        
-        # Tabela finansowa
-        st.write("**Szczegółowa wartość pozycji:**")
-        st.dataframe(df_fin[['nazwa', 'sztuk', 'cena', 'Wartość łączna']], 
-                     column_config={
-                         "cena": st.column_config.NumberColumn("Cena jedn.", format="%.2f PLN"),
-                         "Wartość łączna": st.column_config.NumberColumn("Wartość pozycji", format="%.2f PLN")
-                     },
-                     hide_index=True, use_container_width=True)
-    else:
-        st.warning("Magazyn jest pusty, brak danych finansowych.")
+with t4:
+    if not df.empty:
+        df['Wartość'] = df['sztuk'] * df['cena']
+        st.metric("Całkowita wartość magazynu", f"{df['Wartość'].sum():,.2f} PLN")
+        st.dataframe(df[['nazwa', 'sztuk', 'cena', 'Wartość']], hide_index=True)
         
