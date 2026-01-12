@@ -8,8 +8,8 @@ st.set_page_config(page_title="Magazyn Chmurowy v3", page_icon="☁️", layout=
 
 # Podłączanie do bazy (Zalecane użycie st.secrets na GitHubie)
 # Jeśli testujesz lokalnie, możesz wpisać dane w cudzysłów
-URL = st.secrets.get("SUPABASE_URL", "TWÓJ_URL_TUTAJ")
-KEY = st.secrets.get("SUPABASE_KEY", "TWÓJ_KLUCZ_TUTAJ")
+URL = https://ioyuvcamccqvgszjxycv.supabase.co
+KEY = sb_publishable_SvkL-WiUqpudkMBtvWKFBA_WNykg-t1
 
 @st.cache_resource
 def init_connection():
